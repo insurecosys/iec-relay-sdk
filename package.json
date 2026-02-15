@@ -1,0 +1,45 @@
+{
+  "name": "iec-relay",
+  "version": "0.1.0",
+  "description": "SDK for sending email and SMS through InsureRelay on the Tawa platform",
+  "main": "dist/index.js",
+  "module": "dist/index.mjs",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.mjs",
+      "require": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "tsup src/index.ts --format cjs,esm --dts --clean",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "lint": "tsc --noEmit",
+    "prepublishOnly": "npm run build"
+  },
+  "keywords": [
+    "insureco",
+    "tawa",
+    "relay",
+    "email",
+    "sms",
+    "sendgrid",
+    "twilio"
+  ],
+  "author": "InsurEco",
+  "license": "MIT",
+  "devDependencies": {
+    "@types/node": "^25.2.3",
+    "tsup": "^8.0.0",
+    "typescript": "^5.4.0",
+    "vitest": "^2.0.0"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  }
+}
