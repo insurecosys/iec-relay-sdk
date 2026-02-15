@@ -11,6 +11,7 @@ import type {
 
 const DEFAULT_JANUS_URL = 'http://janus.janus-prod.svc.cluster.local:3000'
 const RELAY_API_PATH = '/api/relay'
+const DEFAULT_TIMEOUT_MS = 10_000
 
 export class RelayError extends Error {
   constructor(
@@ -26,7 +27,7 @@ export class RelayError extends Error {
 
 export class RelayClient {
   private readonly config: Required<
-    Pick<RelayClientConfig, 'retries' | 'tokenTtlSeconds' | 'sourceService'>
+    Pick<RelayClientConfig, 'retries' | 'tokenTtlSeconds' | 'sourceService' | 'timeoutMs'>
   > &
     RelayClientConfig
 
@@ -48,6 +49,7 @@ export class RelayClient {
       retries: config.retries ?? 2,
       tokenTtlSeconds: config.tokenTtlSeconds ?? 300,
       sourceService: config.sourceService ?? config.programId ?? 'unknown',
+      timeoutMs: config.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     }
   }
 
@@ -86,8 +88,12 @@ export class RelayClient {
    * Send an email through InsureRelay.
    */
   async sendEmail(options: SendEmailOptions): Promise<SendResponse> {
-    if (!options.to.email) {
-      throw new RelayError('Recipient email is required for email channel', 400, 'VALIDATION_ERROR')
+    if (!options.to.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(options.to.email)) {
+      throw new RelayError(
+        'Valid recipient email is required for email channel',
+        400,
+        'VALIDATION_ERROR',
+      )
     }
 
     return this.send({
@@ -108,8 +114,12 @@ export class RelayClient {
    * Send an SMS through InsureRelay.
    */
   async sendSMS(options: SendSMSOptions): Promise<SendResponse> {
-    if (!options.to.phone) {
-      throw new RelayError('Recipient phone is required for SMS channel', 400, 'VALIDATION_ERROR')
+    if (!options.to.phone || !/^\+[1-9]\d{1,14}$/.test(options.to.phone)) {
+      throw new RelayError(
+        'Recipient phone must be in E.164 format (e.g., +15551234567)',
+        400,
+        'VALIDATION_ERROR',
+      )
     }
 
     return this.send({
@@ -130,8 +140,7 @@ export class RelayClient {
    * Get the delivery status of a sent message.
    */
   async getStatus(messageId: string): Promise<MessageStatus> {
-    const response = await this.request<MessageStatus>('GET', `/status/${messageId}`)
-    return response
+    return this.request<MessageStatus>('GET', `/status/${messageId}`)
   }
 
   /**
@@ -164,6 +173,7 @@ export class RelayClient {
         ...(body ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(body ? { body: JSON.stringify(body) } : {}),
+      signal: AbortSignal.timeout(this.config.timeoutMs),
     }
 
     let response: Response
@@ -172,20 +182,49 @@ export class RelayClient {
       response = await fetch(url, fetchOptions)
     } catch (err) {
       if (attempt < this.config.retries) {
-        const delay = Math.min(1000 * 2 ** attempt, 5000)
+        const baseDelay = Math.min(1000 * 2 ** attempt, 5000)
+        const delay = baseDelay * (0.5 + Math.random() * 0.5)
         await sleep(delay)
         return this.request<T>(method, path, body, attempt + 1)
       }
 
-      const message = err instanceof Error ? err.message : 'Network error'
-      throw new RelayError(`Failed to reach InsureRelay: ${message}`, 0, 'NETWORK_ERROR')
+      const isTimeout =
+        err instanceof DOMException && err.name === 'TimeoutError'
+      const message = isTimeout
+        ? `Request timed out after ${this.config.timeoutMs}ms`
+        : err instanceof Error
+          ? err.message
+          : 'Network error'
+
+      throw new RelayError(
+        `Failed to reach InsureRelay: ${message}`,
+        0,
+        isTimeout ? 'TIMEOUT' : 'NETWORK_ERROR',
+      )
     }
 
-    const json = (await response.json()) as ApiResponse<T>
+    let json: ApiResponse<T>
+    try {
+      json = (await response.json()) as ApiResponse<T>
+    } catch {
+      if (response.status >= 500 && attempt < this.config.retries) {
+        const baseDelay = Math.min(1000 * 2 ** attempt, 5000)
+        const delay = baseDelay * (0.5 + Math.random() * 0.5)
+        await sleep(delay)
+        return this.request<T>(method, path, body, attempt + 1)
+      }
+
+      throw new RelayError(
+        `InsureRelay returned ${response.status} with non-JSON body`,
+        response.status,
+        'PARSE_ERROR',
+      )
+    }
 
     if (!response.ok) {
       if (response.status >= 500 && attempt < this.config.retries) {
-        const delay = Math.min(1000 * 2 ** attempt, 5000)
+        const baseDelay = Math.min(1000 * 2 ** attempt, 5000)
+        const delay = baseDelay * (0.5 + Math.random() * 0.5)
         await sleep(delay)
         return this.request<T>(method, path, body, attempt + 1)
       }

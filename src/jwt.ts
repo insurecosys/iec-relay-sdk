@@ -1,6 +1,7 @@
 import { createHmac } from 'node:crypto'
 
 interface JwtPayload {
+  iss: string
   programId: string
   scopes: string[]
   iat: number
@@ -21,10 +22,15 @@ export function mintServiceJwt(
   programId: string,
   ttlSeconds: number = 300,
 ): string {
+  if (!secret || secret.length < 32) {
+    throw new Error('iec-relay: JWT secret must be at least 32 characters (256 bits) for HS256')
+  }
+
   const header = base64url(JSON.stringify({ alg: 'HS256', typ: 'JWT' }))
   const now = Math.floor(Date.now() / 1000)
 
   const payload: JwtPayload = {
+    iss: `iec-relay:${programId}`,
     programId,
     scopes: ['service:relay'],
     iat: now,

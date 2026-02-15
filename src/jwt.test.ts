@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest'
 import { mintServiceJwt, isTokenExpired } from './jwt.js'
 
-const TEST_SECRET = 'test-secret-key-for-unit-tests'
+const TEST_SECRET = 'test-secret-key-for-unit-tests-abc'  // 34 chars (>= 32)
 
 describe('mintServiceJwt', () => {
   it('produces a valid 3-part JWT string', () => {
@@ -16,9 +16,10 @@ describe('mintServiceJwt', () => {
     expect(header).toEqual({ alg: 'HS256', typ: 'JWT' })
   })
 
-  it('includes programId and scopes in payload', () => {
+  it('includes iss, programId and scopes in payload', () => {
     const token = mintServiceJwt(TEST_SECRET, 'my-service')
     const payload = JSON.parse(Buffer.from(token.split('.')[1], 'base64url').toString())
+    expect(payload.iss).toBe('iec-relay:my-service')
     expect(payload.programId).toBe('my-service')
     expect(payload.scopes).toEqual(['service:relay'])
     expect(payload.iat).toBeTypeOf('number')
@@ -38,9 +39,16 @@ describe('mintServiceJwt', () => {
   })
 
   it('produces different signatures for different secrets', () => {
-    const token1 = mintServiceJwt('secret-a', 'test-org')
-    const token2 = mintServiceJwt('secret-b', 'test-org')
+    const secretA = 'aaaa-secret-key-for-testing-sig-a'
+    const secretB = 'bbbb-secret-key-for-testing-sig-b'
+    const token1 = mintServiceJwt(secretA, 'test-org')
+    const token2 = mintServiceJwt(secretB, 'test-org')
     expect(token1.split('.')[2]).not.toBe(token2.split('.')[2])
+  })
+
+  it('rejects secrets shorter than 32 characters', () => {
+    expect(() => mintServiceJwt('too-short', 'test-org')).toThrow('at least 32 characters')
+    expect(() => mintServiceJwt('', 'test-org')).toThrow('at least 32 characters')
   })
 })
 

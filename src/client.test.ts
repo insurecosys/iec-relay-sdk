@@ -79,6 +79,32 @@ describe('RelayClient.sendEmail', () => {
     ).rejects.toThrow(RelayError)
   })
 
+  it('throws RelayError for invalid email format', async () => {
+    await expect(
+      client.sendEmail({
+        template: 'welcome',
+        to: { email: 'not-an-email' },
+        data: {},
+      }),
+    ).rejects.toThrow('Valid recipient email')
+  })
+
+  it('handles non-JSON error responses', async () => {
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: false,
+      status: 502,
+      json: () => Promise.reject(new SyntaxError('Unexpected token')),
+    } as unknown as Response)
+
+    await expect(
+      client.sendEmail({
+        template: 'welcome',
+        to: { email: 'test@test.com' },
+        data: {},
+      }),
+    ).rejects.toThrow('non-JSON body')
+  })
+
   it('sends email with correct request body', async () => {
     const mockResponse = {
       success: true,
@@ -229,7 +255,17 @@ describe('RelayClient.sendSMS', () => {
         to: { email: 'test@test.com' },
         data: {},
       }),
-    ).rejects.toThrow('Recipient phone is required')
+    ).rejects.toThrow('E.164 format')
+  })
+
+  it('throws for invalid phone format', async () => {
+    await expect(
+      client.sendSMS({
+        template: 'password-reset',
+        to: { phone: '5551234567' },
+        data: {},
+      }),
+    ).rejects.toThrow('E.164 format')
   })
 
   it('sends SMS with correct channel', async () => {

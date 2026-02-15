@@ -83,16 +83,23 @@ export interface RelayClientConfig {
   internalKey?: string
   /** JWT token lifetime in seconds (default: 300 = 5 minutes) */
   tokenTtlSeconds?: number
-  /** Number of retry attempts on transient failures (default: 2) */
+  /**
+   * Number of retry attempts on transient failures (default: 2).
+   * Note: Retries on POST /send may cause duplicate messages if the server
+   * processed the request but the response was lost. Set to 0 if duplicates
+   * are unacceptable.
+   */
   retries?: number
+  /** Request timeout in milliseconds (default: 10000) */
+  timeoutMs?: number
   /** Source service name for metadata (default: programId) */
   sourceService?: string
 }
 
-/** Simplified options for sendEmail */
-export interface SendEmailOptions {
-  /** Template name */
-  template: string
+/** Base options shared by sendEmail and sendSMS */
+interface BaseSendOptions {
+  /** Template name (built-in or custom) */
+  template: BuiltInTemplate | (string & {})
   /** Recipient */
   to: Recipient
   /** Template variables */
@@ -103,16 +110,8 @@ export interface SendEmailOptions {
   metadata?: Partial<MessageMetadata>
 }
 
-/** Simplified options for sendSMS */
-export interface SendSMSOptions {
-  /** Template name */
-  template: string
-  /** Recipient */
-  to: Recipient
-  /** Template variables */
-  data: Record<string, unknown>
-  /** Optional send options */
-  options?: SendOptions
-  /** Optional metadata overrides */
-  metadata?: Partial<MessageMetadata>
-}
+/** Options for sendEmail — requires to.email */
+export interface SendEmailOptions extends BaseSendOptions {}
+
+/** Options for sendSMS — requires to.phone */
+export interface SendSMSOptions extends BaseSendOptions {}
