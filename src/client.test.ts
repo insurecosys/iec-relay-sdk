@@ -4,15 +4,20 @@ import { RelayClient, RelayError } from './client.js'
 const TEST_SECRET = '370e0b7a6c0f59b8979701ad239fda3cfafb1ce0215e70497b8ddea2f7ba44ee'
 
 describe('RelayClient constructor', () => {
-  it('requires jwtSecret or relayUrl', () => {
-    expect(() => new RelayClient({})).toThrow('Either jwtSecret')
+  it('requires accessTokenFn, jwtSecret, or relayUrl', () => {
+    expect(() => new RelayClient({})).toThrow('Provide accessTokenFn')
   })
 
   it('requires programId when using jwtSecret', () => {
     expect(() => new RelayClient({ jwtSecret: TEST_SECRET })).toThrow('programId is required')
   })
 
-  it('accepts jwtSecret + programId', () => {
+  it('accepts accessTokenFn for Bio-ID gateway mode', () => {
+    const client = new RelayClient({ accessTokenFn: async () => 'token' })
+    expect(client).toBeInstanceOf(RelayClient)
+  })
+
+  it('accepts jwtSecret + programId (legacy)', () => {
     const client = new RelayClient({ jwtSecret: TEST_SECRET, programId: 'test-org' })
     expect(client).toBeInstanceOf(RelayClient)
   })
@@ -28,29 +33,141 @@ describe('RelayClient.fromEnv', () => {
 
   beforeEach(() => {
     process.env = { ...originalEnv }
+    delete process.env.RELAY_DIRECT_URL
+    delete process.env.RELAY_INTERNAL_KEY
+    delete process.env.BIO_CLIENT_ID
+    delete process.env.BIO_CLIENT_SECRET
+    delete process.env.BIO_ID_URL
+    delete process.env.JWT_SECRET
+    delete process.env.PROGRAM_ID
+    delete process.env.JANUS_URL
   })
 
   afterEach(() => {
     process.env = originalEnv
   })
 
-  it('creates client from RELAY_DIRECT_URL', () => {
+  it('creates client from RELAY_DIRECT_URL (local dev)', () => {
     process.env.RELAY_DIRECT_URL = 'http://localhost:3001'
     const client = RelayClient.fromEnv()
     expect(client).toBeInstanceOf(RelayClient)
   })
 
-  it('creates client from JWT_SECRET + PROGRAM_ID', () => {
+  it('creates client from BIO_CLIENT_ID + BIO_CLIENT_SECRET (recommended)', () => {
+    process.env.BIO_CLIENT_ID = 'my-service-prod'
+    process.env.BIO_CLIENT_SECRET = 'secret_abc123'
+    const client = RelayClient.fromEnv()
+    expect(client).toBeInstanceOf(RelayClient)
+  })
+
+  it('creates client from JWT_SECRET + PROGRAM_ID (legacy)', () => {
     process.env.JWT_SECRET = TEST_SECRET
     process.env.PROGRAM_ID = 'test-org'
     const client = RelayClient.fromEnv()
     expect(client).toBeInstanceOf(RelayClient)
   })
 
+  it('prefers RELAY_DIRECT_URL over BIO_CLIENT_ID', async () => {
+    process.env.RELAY_DIRECT_URL = 'http://localhost:3001'
+    process.env.BIO_CLIENT_ID = 'my-service-prod'
+    process.env.BIO_CLIENT_SECRET = 'secret_abc123'
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        success: true,
+        data: { messageId: 'msg-1', channel: 'email', status: 'sent', providerMessageId: 'x' },
+      }),
+    } as Response)
+
+    const client = RelayClient.fromEnv()
+    await client.sendEmail({
+      content: { subject: 'Test', html: '<p>Hi</p>' },
+      to: { email: 'test@test.com' },
+    })
+
+    const url = vi.mocked(fetch).mock.calls[0]?.[0] as string
+    expect(url).toBe('http://localhost:3001/send')
+
+    vi.restoreAllMocks()
+  })
+
+  it('prefers BIO_CLIENT_ID over JWT_SECRET', () => {
+    process.env.BIO_CLIENT_ID = 'my-service-prod'
+    process.env.BIO_CLIENT_SECRET = 'secret_abc123'
+    process.env.JWT_SECRET = TEST_SECRET
+    process.env.PROGRAM_ID = 'test-org'
+
+    // Bio-ID token fetch will be called when sending — just verify client creates
+    const client = RelayClient.fromEnv()
+    expect(client).toBeInstanceOf(RelayClient)
+  })
+
   it('throws when no env vars are set', () => {
-    delete process.env.RELAY_DIRECT_URL
-    delete process.env.JWT_SECRET
-    expect(() => RelayClient.fromEnv()).toThrow('Set JWT_SECRET')
+    expect(() => RelayClient.fromEnv()).toThrow('No auth configured')
+  })
+})
+
+describe('RelayClient Bio-ID gateway mode', () => {
+  afterEach(() => {
+    vi.restoreAllMocks()
+  })
+
+  it('routes through Janus with Bio-ID token', async () => {
+    const mockTokenFn = vi.fn().mockResolvedValue('bio-token-abc')
+
+    const client = new RelayClient({
+      accessTokenFn: mockTokenFn,
+      janusUrl: 'https://janus.test.local',
+      sourceService: 'ppay-board',
+    })
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        success: true,
+        data: { messageId: 'msg-1', channel: 'email', status: 'sent', providerMessageId: 'sg-1' },
+      }),
+    } as Response)
+
+    await client.sendEmail({
+      content: { subject: 'Test', html: '<p>Hi</p>' },
+      to: { email: 'user@example.com' },
+    })
+
+    const fetchCall = vi.mocked(fetch).mock.calls[0]
+    const url = fetchCall[0] as string
+    expect(url).toBe('https://janus.test.local/api/relay/send')
+
+    const options = fetchCall[1] as RequestInit
+    const headers = options.headers as Record<string, string>
+    expect(headers['Authorization']).toBe('Bearer bio-token-abc')
+    expect(mockTokenFn).toHaveBeenCalledOnce()
+  })
+
+  it('uses default Janus URL when janusUrl is not set', async () => {
+    const client = new RelayClient({
+      accessTokenFn: async () => 'token',
+    })
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve({
+        success: true,
+        data: { messageId: 'msg-1', channel: 'email', status: 'sent', providerMessageId: 'x' },
+      }),
+    } as Response)
+
+    await client.sendEmail({
+      content: { subject: 'Test', html: '<p>Hi</p>' },
+      to: { email: 'test@test.com' },
+    })
+
+    const url = vi.mocked(fetch).mock.calls[0][0] as string
+    expect(url).toBe('http://janus.janus-prod.svc.cluster.local:3000/api/relay/send')
   })
 })
 

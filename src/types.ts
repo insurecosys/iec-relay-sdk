@@ -82,17 +82,29 @@ export interface ApiResponse<T> {
 
 /** Configuration for the RelayClient */
 export interface RelayClientConfig {
-  /** Shared JWT secret for minting service tokens (required when using Janus) */
-  jwtSecret?: string
-  /** Program/org ID included in the JWT (default: derived from service name) */
-  programId?: string
+  /**
+   * Async function returning a Bearer token (e.g. Bio-ID client_credentials).
+   * This is the recommended auth method — works with both gateway (Janus) and direct modes.
+   * In gateway mode, the builder auto-provisions BIO_CLIENT_ID + BIO_CLIENT_SECRET.
+   */
+  accessTokenFn?: () => Promise<string>
   /** Janus gateway URL (default: http://janus.janus-prod.svc.cluster.local:3000) */
   janusUrl?: string
-  /** Direct relay URL for local dev (bypasses Janus, uses X-Internal-Key auth) */
+  /** Direct relay URL for local dev (bypasses Janus) */
   relayUrl?: string
-  /** Internal API key for direct relay access */
+  /** Internal API key for direct relay access (local dev only) */
   internalKey?: string
-  /** JWT token lifetime in seconds (default: 300 = 5 minutes) */
+  /**
+   * @deprecated Use accessTokenFn with Bio-ID client_credentials instead.
+   * Shared JWT secret for minting service tokens.
+   */
+  jwtSecret?: string
+  /**
+   * @deprecated Use accessTokenFn with Bio-ID client_credentials instead.
+   * Program/org ID included in the JWT.
+   */
+  programId?: string
+  /** JWT token lifetime in seconds (default: 300). Only used with legacy jwtSecret auth. */
   tokenTtlSeconds?: number
   /**
    * Number of retry attempts on transient failures (default: 2).
@@ -103,7 +115,7 @@ export interface RelayClientConfig {
   retries?: number
   /** Request timeout in milliseconds (default: 10000) */
   timeoutMs?: number
-  /** Source service name for metadata (default: programId) */
+  /** Source service name for metadata (default: programId or 'unknown') */
   sourceService?: string
 }
 

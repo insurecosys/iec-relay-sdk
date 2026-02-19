@@ -12,6 +12,7 @@ import type {
 const DEFAULT_JANUS_URL = 'http://janus.janus-prod.svc.cluster.local:3000'
 const RELAY_API_PATH = '/api/relay'
 const DEFAULT_TIMEOUT_MS = 10_000
+const DEFAULT_BIO_ID_URL = 'https://bio.tawa.insureco.io'
 
 export class RelayError extends Error {
   constructor(
@@ -34,13 +35,17 @@ export class RelayClient {
   private cachedToken: string | null = null
 
   constructor(config: RelayClientConfig) {
-    if (!config.jwtSecret && !config.relayUrl) {
+    const hasAccessTokenFn = typeof config.accessTokenFn === 'function'
+    const hasJwtSecret = !!config.jwtSecret
+    const hasRelayUrl = !!config.relayUrl
+
+    if (!hasAccessTokenFn && !hasJwtSecret && !hasRelayUrl) {
       throw new Error(
-        'iec-relay: Either jwtSecret (for Janus) or relayUrl + internalKey (for direct) is required',
+        'iec-relay: Provide accessTokenFn (recommended), jwtSecret (legacy), or relayUrl (local dev)',
       )
     }
 
-    if (config.jwtSecret && !config.programId) {
+    if (hasJwtSecret && !config.programId) {
       throw new Error('iec-relay: programId is required when using jwtSecret')
     }
 
@@ -56,32 +61,84 @@ export class RelayClient {
   /**
    * Create a RelayClient from environment variables.
    *
-   * Reads: JANUS_URL, JWT_SECRET, PROGRAM_ID, RELAY_DIRECT_URL, RELAY_INTERNAL_KEY
+   * Priority:
+   * 1. RELAY_DIRECT_URL — local dev (direct to relay, optional RELAY_INTERNAL_KEY)
+   * 2. BIO_CLIENT_ID + BIO_CLIENT_SECRET — production gateway (Bio-ID token through Janus)
+   * 3. JWT_SECRET + PROGRAM_ID — legacy gateway (self-signed JWT through Janus)
    */
   static fromEnv(): RelayClient {
+    // 1. Local dev — direct relay access
     const relayUrl = process.env.RELAY_DIRECT_URL
-    const internalKey = process.env.RELAY_INTERNAL_KEY
-
     if (relayUrl) {
       return new RelayClient({
         relayUrl,
-        internalKey,
+        internalKey: process.env.RELAY_INTERNAL_KEY,
         sourceService: process.env.PROGRAM_ID ?? process.env.SERVICE_NAME,
       })
     }
 
-    const jwtSecret = process.env.JWT_SECRET
-    if (!jwtSecret) {
-      throw new Error(
-        'iec-relay: Set JWT_SECRET + PROGRAM_ID (for Janus) or RELAY_DIRECT_URL (for direct)',
-      )
+    // 2. Production — Bio-ID client_credentials through Janus (recommended)
+    const bioClientId = process.env.BIO_CLIENT_ID
+    const bioClientSecret = process.env.BIO_CLIENT_SECRET
+    if (bioClientId && bioClientSecret) {
+      const bioIdUrl = process.env.BIO_ID_URL || DEFAULT_BIO_ID_URL
+      let cachedBioToken: string | null = null
+      let bioTokenExpiresAt = 0
+
+      const accessTokenFn = async (): Promise<string> => {
+        const now = Date.now()
+        if (cachedBioToken && now < bioTokenExpiresAt) {
+          return cachedBioToken
+        }
+
+        const response = await fetch(`${bioIdUrl}/api/oauth/token`, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({
+            grant_type: 'client_credentials',
+            client_id: bioClientId,
+            client_secret: bioClientSecret,
+          }),
+        })
+
+        if (!response.ok) {
+          const body = await response.text()
+          throw new RelayError(
+            `Bio-ID token request failed (${response.status}): ${body}`,
+            response.status,
+            'AUTH_ERROR',
+          )
+        }
+
+        const data = await response.json() as { access_token: string; expires_in?: number }
+        cachedBioToken = data.access_token
+        const expiresIn = (data.expires_in || 900) * 1000
+        bioTokenExpiresAt = now + expiresIn - 30_000
+
+        return cachedBioToken
+      }
+
+      return new RelayClient({
+        accessTokenFn,
+        janusUrl: process.env.JANUS_URL,
+        sourceService: process.env.SERVICE_NAME ?? process.env.PROGRAM_ID,
+      })
     }
 
-    return new RelayClient({
-      jwtSecret,
-      programId: process.env.PROGRAM_ID,
-      janusUrl: process.env.JANUS_URL,
-    })
+    // 3. Legacy — self-signed JWT through Janus
+    const jwtSecret = process.env.JWT_SECRET
+    if (jwtSecret) {
+      return new RelayClient({
+        jwtSecret,
+        programId: process.env.PROGRAM_ID,
+        janusUrl: process.env.JANUS_URL,
+      })
+    }
+
+    throw new Error(
+      'iec-relay: No auth configured. Set BIO_CLIENT_ID + BIO_CLIENT_SECRET (recommended), ' +
+      'JWT_SECRET + PROGRAM_ID (legacy), or RELAY_DIRECT_URL (local dev)',
+    )
   }
 
   /**
@@ -229,7 +286,7 @@ export class RelayClient {
     body?: unknown,
     attempt: number = 0,
   ): Promise<T> {
-    const { url, headers } = this.buildRequest(path)
+    const { url, headers } = await this.buildRequest(path)
 
     const fetchOptions: RequestInit = {
       method,
@@ -309,21 +366,32 @@ export class RelayClient {
     return json.data
   }
 
-  private buildRequest(path: string): { url: string; headers: Record<string, string> } {
+  private async buildRequest(path: string): Promise<{ url: string; headers: Record<string, string> }> {
     const headers: Record<string, string> = {}
 
+    // Direct mode (local dev) — call relay URL directly
     if (this.config.relayUrl) {
       const url = `${this.config.relayUrl}${path}`
-      if (this.config.internalKey) {
+      if (this.config.accessTokenFn) {
+        headers['Authorization'] = `Bearer ${await this.config.accessTokenFn()}`
+      } else if (this.config.internalKey) {
         headers['X-Internal-Key'] = this.config.internalKey
       }
       return { url, headers }
     }
 
+    // Gateway mode — route through Janus
     const baseUrl = this.config.janusUrl ?? DEFAULT_JANUS_URL
     const url = `${baseUrl}${RELAY_API_PATH}${path}`
-    headers['Authorization'] = `Bearer ${this.getToken()}`
 
+    // Bio-ID token auth (recommended)
+    if (this.config.accessTokenFn) {
+      headers['Authorization'] = `Bearer ${await this.config.accessTokenFn()}`
+      return { url, headers }
+    }
+
+    // Legacy self-signed JWT auth
+    headers['Authorization'] = `Bearer ${this.getToken()}`
     return { url, headers }
   }
 
@@ -334,7 +402,7 @@ export class RelayClient {
 
     if (!this.config.jwtSecret || !this.config.programId) {
       throw new RelayError(
-        'jwtSecret and programId are required for Janus auth',
+        'jwtSecret and programId are required for legacy Janus auth',
         500,
         'CONFIG_ERROR',
       )
