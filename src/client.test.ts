@@ -232,6 +232,74 @@ describe('RelayClient.sendEmail', () => {
 
     expect(fetch).toHaveBeenCalledTimes(1)
   })
+
+  it('throws when neither template nor content is provided', async () => {
+    await expect(
+      client.sendEmail({
+        to: { email: 'test@test.com' },
+      }),
+    ).rejects.toThrow('Either template or content')
+  })
+
+  it('throws when both template and content are provided', async () => {
+    await expect(
+      client.sendEmail({
+        template: 'welcome',
+        content: { subject: 'Hi', html: '<p>Hello</p>' },
+        to: { email: 'test@test.com' },
+      }),
+    ).rejects.toThrow('not both')
+  })
+
+  it('throws when email content has no subject', async () => {
+    await expect(
+      client.sendEmail({
+        content: { html: '<p>Hello</p>' },
+        to: { email: 'test@test.com' },
+      }),
+    ).rejects.toThrow('requires a subject')
+  })
+
+  it('throws when email content has no html or text', async () => {
+    await expect(
+      client.sendEmail({
+        content: { subject: 'Hi' },
+        to: { email: 'test@test.com' },
+      }),
+    ).rejects.toThrow('either html or text')
+  })
+
+  it('sends raw HTML email with content field', async () => {
+    const mockResponse = {
+      success: true,
+      data: {
+        messageId: 'msg-raw-1',
+        channel: 'email',
+        status: 'sent',
+        providerMessageId: 'sg-raw-1',
+      },
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(mockResponse),
+    } as Response)
+
+    const result = await client.sendEmail({
+      content: { subject: 'Invoice', html: '<h1>Invoice #1</h1>' },
+      to: { email: 'user@example.com' },
+    })
+
+    expect(result.messageId).toBe('msg-raw-1')
+
+    const fetchCall = vi.mocked(fetch).mock.calls[0]
+    const body = JSON.parse((fetchCall[1] as RequestInit).body as string)
+    expect(body.content).toEqual({ subject: 'Invoice', html: '<h1>Invoice #1</h1>' })
+    expect(body.template).toBeUndefined()
+    expect(body.channel).toBe('email')
+    expect(body.metadata.sourceAction).toBe('raw_email')
+  })
 })
 
 describe('RelayClient.sendSMS', () => {
@@ -290,5 +358,64 @@ describe('RelayClient.sendSMS', () => {
     const body = JSON.parse((vi.mocked(fetch).mock.calls[0][1] as RequestInit).body as string)
     expect(body.channel).toBe('sms')
     expect(body.recipient.phone).toBe('+15551234567')
+  })
+
+  it('throws when neither template nor content is provided', async () => {
+    await expect(
+      client.sendSMS({
+        to: { phone: '+15551234567' },
+      }),
+    ).rejects.toThrow('Either template or content')
+  })
+
+  it('throws when both template and content are provided', async () => {
+    await expect(
+      client.sendSMS({
+        template: 'password-reset',
+        content: { text: 'Your code is 123456' },
+        to: { phone: '+15551234567' },
+      }),
+    ).rejects.toThrow('not both')
+  })
+
+  it('throws when SMS content has no text', async () => {
+    await expect(
+      client.sendSMS({
+        content: { subject: 'Code' },
+        to: { phone: '+15551234567' },
+      }),
+    ).rejects.toThrow('SMS content requires text')
+  })
+
+  it('sends raw SMS with content field', async () => {
+    const mockResponse = {
+      success: true,
+      data: {
+        messageId: 'msg-raw-sms',
+        channel: 'sms',
+        status: 'sent',
+        providerMessageId: 'tw-raw-1',
+      },
+    }
+
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue({
+      ok: true,
+      status: 200,
+      json: () => Promise.resolve(mockResponse),
+    } as Response)
+
+    const result = await client.sendSMS({
+      content: { text: 'Your verification code is 123456' },
+      to: { phone: '+15551234567' },
+    })
+
+    expect(result.messageId).toBe('msg-raw-sms')
+
+    const fetchCall = vi.mocked(fetch).mock.calls[0]
+    const body = JSON.parse((fetchCall[1] as RequestInit).body as string)
+    expect(body.content).toEqual({ text: 'Your verification code is 123456' })
+    expect(body.template).toBeUndefined()
+    expect(body.channel).toBe('sms')
+    expect(body.metadata.sourceAction).toBe('raw_sms')
   })
 })

@@ -86,6 +86,7 @@ export class RelayClient {
 
   /**
    * Send an email through InsureRelay.
+   * Provide either `template` (with `data`) or `content` (raw HTML/text).
    */
   async sendEmail(options: SendEmailOptions): Promise<SendResponse> {
     if (!options.to.email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(options.to.email)) {
@@ -96,15 +97,51 @@ export class RelayClient {
       )
     }
 
+    if (!options.template && !options.content) {
+      throw new RelayError(
+        'Either template or content is required',
+        400,
+        'VALIDATION_ERROR',
+      )
+    }
+
+    if (options.template && options.content) {
+      throw new RelayError(
+        'Provide template or content, not both',
+        400,
+        'VALIDATION_ERROR',
+      )
+    }
+
+    if (options.content) {
+      if (!options.content.subject) {
+        throw new RelayError(
+          'Email content requires a subject',
+          400,
+          'VALIDATION_ERROR',
+        )
+      }
+      if (!options.content.html && !options.content.text) {
+        throw new RelayError(
+          'Email content requires either html or text',
+          400,
+          'VALIDATION_ERROR',
+        )
+      }
+    }
+
+    const sourceAction = options.metadata?.sourceAction ?? options.template ?? 'raw_email'
+
     return this.send({
-      template: options.template,
+      ...(options.template ? { template: options.template } : {}),
+      ...(options.content ? { content: options.content } : {}),
       channel: 'email',
       recipient: options.to,
-      data: options.data,
+      data: options.data ?? {},
       options: options.options,
       metadata: {
         sourceService: options.metadata?.sourceService ?? this.config.sourceService,
-        sourceAction: options.metadata?.sourceAction ?? options.template,
+        sourceAction,
         correlationId: options.metadata?.correlationId,
       },
     })
@@ -112,6 +149,7 @@ export class RelayClient {
 
   /**
    * Send an SMS through InsureRelay.
+   * Provide either `template` (with `data`) or `content` (raw text).
    */
   async sendSMS(options: SendSMSOptions): Promise<SendResponse> {
     if (!options.to.phone || !/^\+[1-9]\d{1,14}$/.test(options.to.phone)) {
@@ -122,15 +160,42 @@ export class RelayClient {
       )
     }
 
+    if (!options.template && !options.content) {
+      throw new RelayError(
+        'Either template or content is required',
+        400,
+        'VALIDATION_ERROR',
+      )
+    }
+
+    if (options.template && options.content) {
+      throw new RelayError(
+        'Provide template or content, not both',
+        400,
+        'VALIDATION_ERROR',
+      )
+    }
+
+    if (options.content && !options.content.text) {
+      throw new RelayError(
+        'SMS content requires text',
+        400,
+        'VALIDATION_ERROR',
+      )
+    }
+
+    const sourceAction = options.metadata?.sourceAction ?? options.template ?? 'raw_sms'
+
     return this.send({
-      template: options.template,
+      ...(options.template ? { template: options.template } : {}),
+      ...(options.content ? { content: options.content } : {}),
       channel: 'sms',
       recipient: options.to,
-      data: options.data,
+      data: options.data ?? {},
       options: options.options,
       metadata: {
         sourceService: options.metadata?.sourceService ?? this.config.sourceService,
-        sourceAction: options.metadata?.sourceAction ?? options.template,
+        sourceAction,
         correlationId: options.metadata?.correlationId,
       },
     })

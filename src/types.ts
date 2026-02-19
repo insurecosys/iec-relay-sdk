@@ -1,5 +1,5 @@
 /** Built-in template names available in InsureRelay */
-export type BuiltInTemplate = 'welcome' | 'invitation' | 'password-reset'
+export type BuiltInTemplate = 'welcome' | 'invitation' | 'password-reset' | 'magic-link'
 
 /** Recipient for an email or SMS message */
 export interface Recipient {
@@ -31,10 +31,21 @@ export interface MessageMetadata {
   correlationId?: string
 }
 
+/** Raw content payload for template-less sends */
+export interface ContentPayload {
+  /** Email subject (required for email channel) */
+  subject?: string
+  /** Raw HTML body (email only) */
+  html?: string
+  /** Plain text body (required for SMS, optional fallback for email) */
+  text?: string
+}
+
 /** Full request body for POST /api/relay/send */
 export interface SendRequest {
-  template: string
+  template?: string
   channel: 'email' | 'sms'
+  content?: ContentPayload
   recipient: Recipient
   data: Record<string, unknown>
   options?: SendOptions
@@ -98,12 +109,14 @@ export interface RelayClientConfig {
 
 /** Base options shared by sendEmail and sendSMS */
 interface BaseSendOptions {
-  /** Template name (built-in or custom) */
-  template: BuiltInTemplate | (string & {})
+  /** Template name (built-in or custom). Required unless content is provided. */
+  template?: BuiltInTemplate | (string & {})
+  /** Raw content for template-less sends. Required unless template is provided. */
+  content?: ContentPayload
   /** Recipient */
   to: Recipient
-  /** Template variables */
-  data: Record<string, unknown>
+  /** Template variables (used with template mode) */
+  data?: Record<string, unknown>
   /** Optional send options */
   options?: SendOptions
   /** Optional metadata overrides */
